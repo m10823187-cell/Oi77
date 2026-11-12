@@ -1,0 +1,2253 @@
+-- Arena Habilidades de Super-Heróis | Delta Executor
+-- Menu com quadrado por jogador (foto + nick), 3 toques = farm,
+-- Auto Ataque/E/R, teleporte para posição salva e as duas bases.
+
+-- ========== INTERRUPTOR REMOTO ==========
+-- Interruptor remoto: o arquivo status.txt do seu GitHub.
+-- Escreva "on" para liberar e "off" para bloquear TODO MUNDO na hora (até com menu aberto).
+local STATUS_URL = "https://raw.githubusercontent.com/eude72370-sys/Arena-de-super-her-is-/main/status.txt"
+
+local function desligadoRemoto()
+	local ok, txt = pcall(function()
+		return game:HttpGet(STATUS_URL .. "?t=" .. os.time())
+	end)
+	if not ok or type(txt) ~= "string" then return false end
+	return string.find(string.lower(txt), "off") ~= nil
+end
+
+if desligadoRemoto() then
+	print("Script desativado pelo criador.")
+	return -- para tudo: nenhum menu aparece
+end
+
+--// SERVIÇOS
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local HttpService = game:GetService("HttpService")
+local VIM = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+
+-- ========== CONFIGURAÇÃO ==========
+local VERSAO = "v3.7"
+local TITULO = "Arena Habilidades de Super-Heróis"
+
+local CONFIG = {
+	SAFE_POS = Vector3.new(-118.3, 456.8, -253.1), -- posição salva (foto)
+	OFFSET_Y = -5,       -- altura em relação ao alvo durante o farm
+	NEAR_RADIUS = 30,    -- raio do "farma jogador próximo"
+	SKILL_DELAY = 0.2,   -- intervalo entre os toques automáticos
+	VOID_Y = 390,        -- abaixo disso o jogador está no void (farm nele para)
+}
+
+-- ADMs (criadores do script): ninguém farma neles.
+-- Só os próprios ADMs podem, ligando o interruptor dentro do menu 👑
+local ADMS = {
+	["10_mil414"] = true,
+	["minato1234005"] = true,
+}
+
+-- Base do lobby: criada toda vez que você nasce (invisível). Quem está dentro = lobby
+local BASE = {
+	pos = Vector3.new(192.0, 444.5, -926.4),
+	tamanho = Vector3.new(126.0, 88.0, 364.0), -- L, E, C
+	cor = Color3.fromRGB(0, 150, 255),
+	transparencia = 1, -- 1 = invisível
+}
+
+-- Base de segurança: criada ao sair do lobby, no X/Z de onde você nasceu no mapa
+local BASE_SEGURA = {
+	x = 190, -- posição fixa da base (X)
+	z = -96, -- posição fixa da base (Z)
+	altura = 390, -- altura (Y) da base de cima (se ainda travar ao andar, diminua de 1 em 1)
+	tamanho = Vector3.new(2048, 5, 2048), -- L, E, C
+	camadas = 30, -- bases extras logo abaixo da original (por causa do ragdoll)
+	recuo = 0.7, -- segundos para trás: volta um pouco antes de onde você caiu
+	cor = Color3.fromRGB(0, 150, 255),
+	transparencia = 1, -- 1 = invisível (use 0.7 para ver)
+	pes = 3, -- distância do centro do corpo até os pés
+	folga = 1, -- tolerância do toque
+	espera = 0.1, -- segundos sem checar depois de voltar (curto, para não deixar cair de novo)
+}
+
+local MENU = {
+	largura = 235,
+	altura = 230,
+	posicao = UDim2.new(0, 25, 0, 8), -- X=25 | Y=8
+	raio = 12,
+	transparencia = 0.05,
+}
+
+local BARRA = {altura = 28, transparencia = 0.3}
+local CARD = {largura = 76, altura = 84, foto = 56, espaco = 6, borda = 2, botao = 16, larguraPers = 108}
+local CEL_ALTURA = CARD.altura + CARD.botao + 3 -- quadrado + botão
+local TOQUES = {quantidade = 3, tempo = 0.6} -- 3 toques em até 0.6s
+
+local COR = {
+	fundo = Color3.fromRGB(15, 15, 25),
+	card = Color3.fromRGB(25, 25, 40),
+	texto = Color3.fromRGB(255, 255, 255),
+	sub = Color3.fromRGB(150, 150, 180),
+	azul = Color3.fromRGB(0, 150, 255),
+	laranja = Color3.fromRGB(255, 150, 0),
+	verde = Color3.fromRGB(0, 200, 100),
+	roxo = Color3.fromRGB(200, 50, 200),
+	ouro = Color3.fromRGB(255, 200, 0),
+	cinza = Color3.fromRGB(90, 90, 110),
+	on = Color3.fromRGB(0, 180, 80),
+	onTexto = Color3.fromRGB(0, 110, 50),
+	fechar = Color3.fromRGB(200, 50, 50),
+	minimizar = Color3.fromRGB(200, 150, 0),
+	verdeForte = Color3.fromRGB(0, 255, 100),   -- jogador bem perto
+	verdeFraco = Color3.fromRGB(150, 215, 170), -- jogador perto
+}
+
+-- Tabelas de fundos: cada personagem tem a sua.
+-- Para adicionar mais: acrescente uma linha com o nome (início de palavra maiúscula)
+-- e os IDs entre aspas.
+local FUNDOS = {
+	{nome = "Gojo", ids = {"98795711289950", "14784299953", "76508734782321"}},
+	{nome = "Sukuna", ids = {"112093069635262", "112601525148018"}},
+	{nome = "Solo Leveling", ids = {"18402236533", "73751266936083", "17713575696", "105295147726326"}},
+	{nome = "Garou", ids = {"14967728835", "13037828633", "13621591692", "121770140776554"}},
+}
+local FUNDO_TAM = 88 -- tamanho dos quadradinhos de fundo
+
+-- Figurinhas (ícones) para personalizar o menu. Os que ainda não têm uso ficam guardados aqui.
+-- Em uso: portal, fechar, configuracao, ataque, seta_esquerda, seta_cima, expandir_contorno,
+-- salvar, lixeira, coroa, casa, verificacao, exclamacao, roleta, ferramentas, livros, botao_gui,
+-- seta_voltar_contorno. Guardados: seta_direita, seta_baixo_contorno, caspa, baude, foguete, cadeado.
+local ICONES = {
+	portal = "135230134031189",
+	coroa = "132987126413753",
+	livros = "73371333771716",
+	fechar = "135173194144349",
+	salvar = "82303784854059",
+	seta_direita = "100517744926951",
+	seta_esquerda = "137043085025858",
+	caspa = "119719826140883",
+	seta_cima = "74885007861450",
+	ferramentas = "86418694686311",
+	configuracao = "99576099296908",
+	botao_gui = "100990403512004",
+	verificacao = "139619959097679",
+	casa = "97849377048044",
+	baude = "17368490346",
+	ataque = "17368087730",
+	roleta = "17368197534",
+	foguete = "16670799841",
+	cadeado = "17368080973",
+	exclamacao = "17368194090",
+	lixeira = "17368204793",
+	seta_baixo_contorno = "17368169201",
+	seta_voltar_contorno = "17368177673",
+	expandir_contorno = "17368183719",
+}
+
+-- Personagens do jogo. icone = ID da figura (nil = ainda sem figura: o quadrado mostra o título).
+-- Para colocar a figura de um personagem, é só preencher o icone com o ID entre aspas.
+-- alias = nomes que o jogo pode usar internamente (sem acento, sem espaço, tanto faz).
+local PERSONAGENS = {
+	{nome = "Homem-Aranha", icone = "140264555950971", alias = {"spiderguy", "spiderman", "homemaranha", "aranha"}},
+	{nome = "Rapaz dos Morcegos", icone = "118694724014450", alias = {"batguy", "batman", "rapazdosmorcegos", "morcego"}},
+	{nome = "Pantera Sombria", icone = "115160250439114", alias = {"darkpanther", "blackpanther", "panther", "pantera"}},
+	{nome = "O Speedster", icone = "119628414639450", alias = {"speedster", "flash"}},
+	{nome = "Capitão Escudo", icone = "120581552619232", alias = {"captainshield", "captainamerica", "capitaoescudo", "capitao"}},
+	{nome = "Lobisqueano", icone = "84907514161976", alias = {"wolven", "wolverine", "lobisqueano"}},
+	{nome = "Lanterna de Esmeralda", icone = "112864721418327", alias = {"greenlantern", "emeraldlantern", "lanterna"}},
+	{nome = "Guerreiro Maravilhoso", icone = "94442408680390", alias = {"wonderwarrior", "wonderwoman", "maravilhoso"}},
+	{nome = "Doutor Místico", icone = "78832285727043", alias = {"mysticdoctor", "doctorstrange", "drstrange", "doutormistico"}},
+	{nome = "Homem Blindado", icone = "136236738406870", alias = {"ironman", "armoredman", "homemblindado"}},
+	{nome = "Cara Verde Forte", icone = "94499075099558", alias = {"hulk", "greenhulk", "caraverdeforte", "strongguy"}},
+	{nome = "Bruxa Carmesim", icone = "123586589854008", alias = {"scarletwitch", "crimsonwitch", "bruxacarmesim", "carmesim"}},
+	{nome = "Ant-Man", icone = "118408624726719", alias = {"antman", "antguy"}},
+	{nome = "Deus do Trovão", icone = "130258316226993", alias = {"godofthunder", "thundergod", "thunderlord", "deusdotrovao", "mjolnir", "thor"}},
+	{nome = "Magnetic", icone = "132290674097259", alias = {"magnetic", "magneto"}},
+	{nome = "Simbiote", icone = "117975180080810", alias = {"symbiote", "simbiote", "venom"}},
+	{nome = "Cavaleiro do Fogo Infernal", icone = "89485345687375", alias = {"ghostrider", "hellfireknight", "fogoinfernal", "cavaleirodofogo"}},
+	{nome = "Super-Humano", icone = "130498445407795", alias = {"superhuman", "superhumano", "starborn", "superman"}},
+	{nome = "Luva", alias = {"infinitygauntlet", "gauntlet", "luvadoinfinito", "luva"}},
+	{nome = "Deadpool", alias = {"deadpool"}},
+	{nome = "Red Hulk", alias = {"redhulk"}},
+}
+
+-- Modo "Próximos" dos quadrados: distâncias (em studs) para a borda verde
+local PROX = {forte = 60, fraco = 150}
+
+-- ========== ESTADO ==========
+local vivo = true
+local conexoes = {}
+local target = nil
+local randomOn, nearOn = false, false
+local tpAoMatar = false -- teleportar para a posição salva quando o alvo morrer
+local ultimaPosAlvo = nil
+local auto = {attack = false, e = false, r = false}
+local cartoes = {}
+local cache = {}
+local baseParte = nil   -- base do lobby
+local baseSegura = nil  -- {parte, cf, partes, todas}
+local ultimoChao = nil  -- {pos} última posição firme do mapa em que você pisou
+local posSalva = CONFIG.SAFE_POS -- posição salva (muda ao marcar)
+local posMarcada = false     -- já marcou uma posição?
+local reiniciarDano = false  -- reiniciar ao levar dano
+local iconesOn = false       -- ícones personalizados (figurinhas)
+local modoQuadros = "normal" -- "normal" ou "proximos"
+local mostrarPersonagem = false -- botão do menu principal: mostra o personagem nos quadrados
+local ajustarLayoutModo   -- definida junto dos quadrados
+local atualizarPersonagens -- definida junto dos quadrados
+local definirPersonagem   -- definida junto do botão
+local minimizado = false
+local historicoChao = {} -- últimas posições firmes {t, pos}
+local esperaBase = 0    -- até quando a base de segurança não checa o toque
+local proximaBusca = 0  -- limita a busca de alvo nos modos automáticos
+local paginaAtual = "menu"
+local farmavel = {} -- por jogador: true = os modos de farm podem pegar (ADM começa desligado)
+local refresh           -- definida mais abaixo
+
+-- ========== FUNÇÕES AUXILIARES ==========
+-- Guarda a conexão para poder desligar tudo ao fechar o menu
+local function ligar(sinal, fn)
+	local c = sinal:Connect(fn)
+	table.insert(conexoes, c)
+	return c
+end
+
+-- Cria uma instância já com propriedades e pai
+local function criar(classe, props, pai)
+	local obj = Instance.new(classe)
+	for k, v in pairs(props) do obj[k] = v end
+	obj.Parent = pai
+	return obj
+end
+
+local function arredondar(obj, raio)
+	criar("UICorner", {CornerRadius = UDim.new(0, raio or 8)}, obj)
+end
+
+-- Pulinho ao tocar
+local function efeitoClique(obj, forca)
+	local escala = obj:FindFirstChild("UIScale") or criar("UIScale", {}, obj)
+	TweenService:Create(escala, TweenInfo.new(0.08), {Scale = forca or 1.1}):Play()
+	task.delay(0.08, function()
+		TweenService:Create(escala, TweenInfo.new(0.08), {Scale = 1}):Play()
+	end)
+end
+
+-- Arrastar o menu pela barra (toque ou mouse)
+local function arrastar(handle, alvo)
+	local ativo, inicio, posIni = false, nil, nil
+	handle.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch
+			or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			ativo, inicio, posIni = true, i.Position, alvo.Position
+			i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then ativo = false end
+			end)
+		end
+	end)
+	ligar(UIS.InputChanged, function(i)
+		if ativo and (i.UserInputType == Enum.UserInputType.Touch
+			or i.UserInputType == Enum.UserInputType.MouseMovement) then
+			local d = i.Position - inicio
+			alvo.Position = UDim2.new(posIni.X.Scale, posIni.X.Offset + d.X,
+				posIni.Y.Scale, posIni.Y.Offset + d.Y)
+		end
+	end)
+end
+
+-- Nome do jogador: se o nick for igual ao nome mostra só um
+local function textoNome(plr)
+	if plr.DisplayName == plr.Name then return plr.Name end
+	return plr.DisplayName .. "\n@" .. plr.Name
+end
+
+-- Foto do jogador (carrega em segundo plano)
+local function carregarFoto(plr, label)
+	task.spawn(function()
+		local ok, img = pcall(Players.GetUserThumbnailAsync, Players, plr.UserId,
+			Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+		if ok and label.Parent then label.Image = img end
+	end)
+end
+
+-- ADMs
+local function ehAdm(plr)
+	return ADMS[string.lower(plr.Name)] == true
+end
+
+-- Pode ser escolhido pelos modos automáticos? (botão embaixo do quadrado)
+local function podeFarmarAuto(plr)
+	local v = farmavel[plr]
+	if v == nil then v = not ehAdm(plr) end
+	return v
+end
+
+local function getHRP(char)
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+-- ========== BASES (lobby e segurança) ==========
+local BASE_CF = CFrame.new(BASE.pos)
+
+-- Posição dentro da base do lobby?
+local function noLobby(pos)
+	local p = BASE_CF:PointToObjectSpace(pos)
+	local m = BASE.tamanho / 2
+	return math.abs(p.X) <= m.X and math.abs(p.Y) <= m.Y and math.abs(p.Z) <= m.Z
+end
+
+-- Cria a base do lobby (apaga a anterior). Toda vez que você nasce
+local function criarBase()
+	if baseParte then baseParte:Destroy() end
+	baseParte = criar("Part", {
+		Name = "BaseLobby",
+		Anchored = true,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Size = BASE.tamanho,
+		CFrame = BASE_CF,
+		Color = BASE.cor,
+		Material = Enum.Material.SmoothPlastic,
+		Transparency = BASE.transparencia,
+	}, workspace)
+end
+
+local function removerBaseSegura()
+	if baseSegura then
+		for _, parte in ipairs(baseSegura.partes) do parte:Destroy() end
+		baseSegura = nil
+	end
+	ultimoChao = nil
+	historicoChao = {}
+end
+
+-- Cria a base de segurança na posição fixa X:190 Y:390 Z:-96 (2048x5x2048),
+-- mais as camadas extras logo abaixo (o ragdoll não deixa atravessar)
+local function criarBaseSegura(posMapa)
+	removerBaseSegura()
+	local cf = CFrame.new(BASE_SEGURA.x, BASE_SEGURA.altura, BASE_SEGURA.z)
+	local partes, todas = {}, {}
+	for i = 0, BASE_SEGURA.camadas do
+		local parte = criar("Part", {
+			Name = "BaseSegura",
+			Anchored = true,
+			CanCollide = true, -- também segura você se cair no void
+			CanQuery = true,
+			CanTouch = false,
+			Size = BASE_SEGURA.tamanho,
+			CFrame = cf * CFrame.new(0, -i * BASE_SEGURA.tamanho.Y, 0),
+			Color = BASE_SEGURA.cor,
+			Material = Enum.Material.SmoothPlastic,
+			Transparency = BASE_SEGURA.transparencia,
+		}, workspace)
+		table.insert(partes, parte)
+		todas[parte] = true
+	end
+	baseSegura = {parte = partes[1], cf = cf, partes = partes, todas = todas}
+	ultimoChao = {pos = posMapa} -- só vale até você pisar em algum lugar do mapa
+end
+
+-- Roda todo frame: cria a base de segurança ao sair do lobby,
+-- guarda o último chão firme e te devolve a ele se você tocar ou ATRAVESSAR a base
+local raioParams = RaycastParams.new()
+raioParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- Parte mais baixa do CORPO (só as partes do boneco; efeitos e peças do jogo não contam)
+local PARTES_CORPO = {
+	HumanoidRootPart = true, Head = true, Torso = true, UpperTorso = true, LowerTorso = true,
+	["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
+	LeftFoot = true, RightFoot = true, LeftLowerLeg = true, RightLowerLeg = true,
+	LeftUpperLeg = true, RightUpperLeg = true, LeftHand = true, RightHand = true,
+	LeftLowerArm = true, RightLowerArm = true, LeftUpperArm = true, RightUpperArm = true,
+}
+
+local function pontoMaisBaixo(char, hrp)
+	local y = hrp.Position.Y - BASE_SEGURA.pes
+	for _, p in ipairs(char:GetChildren()) do
+		if p:IsA("BasePart") and PARTES_CORPO[p.Name] then
+			local py = p.Position.Y - p.Size.Y / 2
+			if py < y then y = py end
+		end
+	end
+	return y
+end
+
+-- Ponto de volta: um pouco ANTES do último chão (recuo em segundos)
+local function pontoDeVolta()
+	local n = #historicoChao
+	if n == 0 then return ultimoChao and ultimoChao.pos end
+	local alvoT = historicoChao[n].t - BASE_SEGURA.recuo
+	for i = n, 1, -1 do
+		if historicoChao[i].t <= alvoT then return historicoChao[i].pos end
+	end
+	return historicoChao[1].pos
+end
+
+-- Leva o corpo inteiro de volta e zera a queda
+local function voltarAoChao(char, hum)
+	local destino = pontoDeVolta()
+	if not destino then return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") then
+			p.AssemblyLinearVelocity = Vector3.zero
+			p.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+	char:PivotTo(CFrame.new(destino + Vector3.new(0, 3, 0)))
+	pcall(function()
+		hum.PlatformStand = false
+		hum.Sit = false
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end)
+	ultimoChao = {pos = destino}
+	historicoChao = {{t = os.clock(), pos = destino}}
+	esperaBase = os.clock() + BASE_SEGURA.espera
+end
+
+local paradoDesde = nil -- desde quando você está parado na vertical
+local contBase = 0      -- quantas checagens seguidas indicaram que você tocou na base
+
+local function atualizarBases(char, hrp, hum)
+	if not baseSegura then
+		if not noLobby(hrp.Position) then criarBaseSegura(hrp.Position) end
+		return
+	end
+	if noLobby(hrp.Position) then return end
+
+	local topo = BASE_SEGURA.altura + BASE_SEGURA.tamanho.Y / 2
+	local fundo = BASE_SEGURA.altura - (BASE_SEGURA.camadas + 1) * BASE_SEGURA.tamanho.Y - 20
+	local baixo = pontoMaisBaixo(char, hrp)
+
+	-- Durante o farm só age se você cair abaixo de todas as camadas
+	if target then
+		if hrp.Position.Y < fundo then
+			target = nil
+			voltarAoChao(char, hum)
+			refresh()
+		end
+		return
+	end
+
+	-- Tocou OU atravessou a base: só volta se isso se repetir por alguns frames
+	-- e se NÃO houver chão do mapa logo embaixo (andar perto da base não conta)
+	local tocando = baixo <= topo + BASE_SEGURA.folga
+	if tocando and hrp.Position.Y >= topo then
+		raioParams.FilterDescendantsInstances = {char, baseParte}
+		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -6, 0), raioParams)
+		if hit and not baseSegura.todas[hit.Instance] and hit.Position.Y > topo + 0.1 then
+			tocando = false
+		end
+	end
+	if tocando and os.clock() > esperaBase then
+		contBase += 1
+		if contBase >= 3 then
+			contBase = 0
+			voltarAoChao(char, hum)
+			return
+		end
+	else
+		contBase = 0
+	end
+
+	-- Guarda a última parte do mapa em que você pisou.
+	-- Conta como "pisou" se: o jogo diz que há chão, OU você ficou parado na
+	-- vertical por um instante, OU há chão sólido logo abaixo.
+	if baixo > topo + BASE_SEGURA.folga + 0.5 then
+		local vy = hrp.AssemblyLinearVelocity.Y
+		if math.abs(vy) < 0.5 then
+			paradoDesde = paradoDesde or os.clock()
+		else
+			paradoDesde = nil
+		end
+
+		local noChao = hum.FloorMaterial ~= Enum.Material.Air
+			or (paradoDesde ~= nil and os.clock() - paradoDesde > 0.25)
+
+		if not noChao and math.abs(vy) < 3 then
+			raioParams.FilterDescendantsInstances = {char, baseParte}
+			local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -8, 0), raioParams)
+			if hit and not baseSegura.todas[hit.Instance] then
+				local modelo = hit.Instance:FindFirstAncestorOfClass("Model")
+				noChao = not (modelo and modelo:FindFirstChildOfClass("Humanoid"))
+			end
+		end
+
+		if noChao then
+			ultimoChao = {pos = hrp.Position}
+			local agora = os.clock()
+			local ult = historicoChao[#historicoChao]
+			if not ult or agora - ult.t >= 0.1 then
+				table.insert(historicoChao, {t = agora, pos = hrp.Position})
+				while #historicoChao > 0 and agora - historicoChao[1].t > 5 do
+					table.remove(historicoChao, 1)
+				end
+			end
+		end
+	end
+end
+
+-- ========== LÓGICA DO JOGO ==========
+local startChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+startChar:WaitForChild("HumanoidRootPart")
+
+-- Motivo pelo qual o jogador NÃO pode ser farmado (nil = pode)
+local function motivoInvalido(plr)
+	if not plr or plr == LocalPlayer then return "invalido" end
+	local char = plr.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = getHRP(char)
+	if not hum or not hrp then return "saiu" end
+	if hum.Health <= 0 then return "morto" end
+	if noLobby(hrp.Position) then return "lobby" end
+	if hrp.Position.Y < CONFIG.VOID_Y then return "void" end
+	return nil
+end
+
+local function isValid(plr)
+	return motivoInvalido(plr) == nil
+end
+
+-- Escolhe um alvo nos modos automáticos
+local function escolherAlvo(hrp)
+	local lista = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if isValid(p) and podeFarmarAuto(p) then
+			table.insert(lista, p)
+		end
+	end
+	if #lista == 0 then return nil end
+
+	if randomOn then
+		return lista[math.random(#lista)]
+	end
+
+	-- próximo: o mais perto dentro do raio
+	local melhor, dist = nil, CONFIG.NEAR_RADIUS
+	for _, p in ipairs(lista) do
+		local d = (getHRP(p.Character).Position - hrp.Position).Magnitude
+		if d < dist then melhor, dist = p, d end
+	end
+	return melhor
+end
+
+-- Cola em você no alvo (pelos pés): move o corpo INTEIRO e zera a velocidade.
+-- Roda em 3 momentos por frame (antes da física, depois e antes de desenhar)
+-- para o personagem não aparecer em outros lugares
+local function seguirAlvo(char, hrp)
+	local th = target and getHRP(target.Character)
+	if not th then return end
+	char:PivotTo(CFrame.new(th.Position + Vector3.new(0, CONFIG.OFFSET_Y, 0)))
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+end
+
+-- Um passo do farm (todo frame). Funciona até se você estiver no lobby:
+-- ao ligar o farm você vai direto para o alvo
+local function farmar(hrp)
+	if target then
+		local motivo = motivoInvalido(target)
+		if motivo then
+			local th = getHRP(target.Character)
+			local pos = (th and th.Position) or ultimaPosAlvo
+			target = nil
+			local char = hrp.Parent
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if motivo == "void" then
+				-- alvo caiu no void: volta para a última parte do mapa
+				if hum then voltarAoChao(char, hum) end
+			elseif motivo == "morto" and tpAoMatar then
+				-- opção ligada: vai para a posição salva
+				char:PivotTo(CFrame.new(posSalva))
+				hrp.AssemblyLinearVelocity = Vector3.zero
+			elseif pos then
+				-- opção desligada: sai de baixo da terra e fica em cima do mapa
+				char:PivotTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+				hrp.AssemblyLinearVelocity = Vector3.zero
+			end
+			refresh()
+			return
+		end
+		ultimaPosAlvo = getHRP(target.Character).Position
+		seguirAlvo(hrp.Parent, hrp)
+		return
+	end
+
+	if (randomOn or nearOn) and os.clock() >= proximaBusca then
+		proximaBusca = os.clock() + 0.25
+		target = escolherAlvo(hrp)
+		if target then refresh() end
+	end
+end
+
+-- Liga/desliga o farm manual em um jogador (3 toques no quadrado)
+local function alternarFarm(plr)
+	if target == plr then
+		target = nil
+	elseif isValid(plr) then
+		target = plr
+	end
+	refresh()
+end
+
+-- Busca dos botões do jogo
+local WORDS = {
+	attack = {"ataque", "attack", "m1"},
+	e = {"e"},
+	r = {"r"},
+}
+
+local function findGameButton(kind)
+	local cached = cache[kind]
+	if cached and cached.Parent then return cached end
+
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	if not pg then return nil end
+
+	for _, o in ipairs(pg:GetDescendants()) do
+		if (o:IsA("TextLabel") or o:IsA("TextButton")) and o.Visible then
+			local t = string.lower(o.Text):gsub("%s", "")
+			for _, w in ipairs(WORDS[kind]) do
+				if t == w then
+					local host = o:FindFirstAncestorWhichIsA("GuiButton") or o
+					cache[kind] = host
+					return host
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- Apertar: só toque de celular
+local function press(kind)
+	local host = findGameButton(kind)
+	if not host then return end
+
+	if firesignal then
+		for _, name in ipairs({"MouseButton1Down", "MouseButton1Click", "Activated", "MouseButton1Up"}) do
+			pcall(function() firesignal(host[name]) end)
+		end
+	end
+
+	local inset = GuiService:GetGuiInset()
+	local p = host.AbsolutePosition + host.AbsoluteSize / 2 + inset
+	VIM:SendTouchEvent(7, 0, p.X, p.Y)
+	task.wait(0.03)
+	VIM:SendTouchEvent(7, 2, p.X, p.Y)
+end
+
+-- Loop dos botões automáticos (Ataque / E / R)
+task.spawn(function()
+	while vivo and task.wait(CONFIG.SKILL_DELAY) do
+		if auto.attack then press("attack") end
+		if auto.e then press("e") end
+		if auto.r then press("r") end
+	end
+end)
+
+-- ========== JANELA ==========
+local gui = criar("ScreenGui", {Name = "TemaMenu", ResetOnSpawn = false})
+if not pcall(function() gui.Parent = (gethui and gethui()) or game:GetService("CoreGui") end) then
+	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local main = criar("Frame", {
+	Size = UDim2.new(0, MENU.largura, 0, MENU.altura),
+	Position = MENU.posicao,
+	BackgroundColor3 = COR.fundo,
+	BackgroundTransparency = MENU.transparencia,
+	BorderSizePixel = 0,
+}, gui)
+arredondar(main, MENU.raio)
+criar("UIStroke", {Color = COR.azul, Thickness = 2}, main)
+
+-- Fundo do menu (imagem escolhida na página CONFIGURAÇÃO). Fica atrás de tudo.
+local fundoImg = criar("ImageLabel", {
+	Name = "Fundo",
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	ImageTransparency = 0.1,
+	ScaleType = Enum.ScaleType.Crop,
+	Visible = false,
+}, main)
+arredondar(fundoImg, MENU.raio)
+
+-- ========== ÍCONES (figurinhas) ==========
+local function idTexto(id) -- evita notação científica nos IDs grandes
+	return string.format("%.0f", tonumber(id))
+end
+
+local function miniatura(id, tam)
+	tam = tam or 420
+	return "rbxthumb://type=Asset&id=" .. idTexto(id) .. "&w=" .. tam .. "&h=" .. tam
+end
+
+-- Pré-carrega imagens (o jogo baixa antes de precisar, sem atraso na hora de mostrar)
+local function preCarregar(urls)
+	local CP = game:GetService("ContentProvider")
+	local alvos = {}
+	for _, u in ipairs(urls) do
+		local img = Instance.new("ImageLabel")
+		img.Name = "PreCarga"
+		img.Size = UDim2.new(0, 1, 0, 1)
+		img.Position = UDim2.new(-1, 0, -1, 0)
+		img.BackgroundTransparency = 1
+		img.ImageTransparency = 0.99
+		img.Image = u
+		img.Parent = gui
+		table.insert(alvos, img)
+	end
+	pcall(function() CP:PreloadAsync(alvos) end)
+end
+
+local iconesAlvos = {}
+local function valor(v)
+	if type(v) == "function" then return v() end
+	return v
+end
+
+-- alvo = {alvo = objeto de texto (emoji), img = ImageLabel, chave = nome ou função, emoji = texto ou função}
+local function registrarIcone(a)
+	table.insert(iconesAlvos, a)
+end
+
+-- Modo normal: mostra o emoji. Modo personalizado: mostra a figurinha.
+local function atualizarIcones()
+	for _, a in ipairs(iconesAlvos) do
+		local id = ICONES[valor(a.chave)]
+		local usa = iconesOn and id ~= nil
+		a.img.Visible = usa
+		if usa then a.img.Image = miniatura(id, 150) end
+		a.alvo.Text = usa and "" or (valor(a.emoji) or "")
+	end
+end
+
+-- Animação ao personalizar: o menu fica preto e uma barra carrega o seu menu
+local carregando = criar("Frame", {
+	Name = "Carregando",
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundColor3 = Color3.new(0, 0, 0),
+	BackgroundTransparency = 1,
+	Visible = false,
+	Active = true,
+	ZIndex = 50,
+}, main)
+arredondar(carregando, MENU.raio)
+
+local carTexto = criar("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 18),
+	Position = UDim2.new(0, 10, 0.5, -28),
+	BackgroundTransparency = 1,
+	Text = "Carregando seu menu...",
+	TextColor3 = COR.texto,
+	TextSize = 13,
+	Font = Enum.Font.SourceSansBold,
+	Visible = false,
+	ZIndex = 51,
+}, carregando)
+
+local carTrilho = criar("Frame", {
+	Size = UDim2.new(0.7, 0, 0, 10),
+	Position = UDim2.new(0.15, 0, 0.5, -4),
+	BackgroundColor3 = Color3.fromRGB(40, 40, 60),
+	BorderSizePixel = 0,
+	Visible = false,
+	ZIndex = 51,
+}, carregando)
+arredondar(carTrilho, 5)
+
+local carBarra = criar("Frame", {
+	Size = UDim2.new(0, 0, 1, 0),
+	BackgroundColor3 = COR.azul,
+	BorderSizePixel = 0,
+	ZIndex = 52,
+}, carTrilho)
+arredondar(carBarra, 5)
+
+local carPct = criar("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 16),
+	Position = UDim2.new(0, 0, 0.5, 10),
+	BackgroundTransparency = 1,
+	Text = "0%",
+	TextColor3 = COR.sub,
+	TextSize = 11,
+	Font = Enum.Font.SourceSansBold,
+	Visible = false,
+	ZIndex = 51,
+}, carregando)
+
+local animando = false
+local function animarCarregamento(aoMeio)
+	if animando then return end
+	animando = true
+	task.spawn(function()
+		carBarra.Size = UDim2.new(0, 0, 1, 0)
+		carPct.Text = "0%"
+		carregando.BackgroundTransparency = 1
+		carregando.Visible = true
+		TweenService:Create(carregando, TweenInfo.new(0.3), {BackgroundTransparency = 0}):Play()
+		task.wait(0.3)
+		carTexto.Visible, carTrilho.Visible, carPct.Visible = true, true, true
+
+		local passos = 20
+		for i = 1, passos do
+			TweenService:Create(carBarra, TweenInfo.new(0.07), {Size = UDim2.new(i / passos, 0, 1, 0)}):Play()
+			carPct.Text = math.floor(i / passos * 100) .. "%"
+			if i == 12 and aoMeio then pcall(aoMeio) end
+			task.wait(0.07)
+		end
+
+		task.wait(0.15)
+		carTexto.Visible, carTrilho.Visible, carPct.Visible = false, false, false
+		TweenService:Create(carregando, TweenInfo.new(0.35), {BackgroundTransparency = 1}):Play()
+		task.wait(0.35)
+		carregando.Visible = false
+		animando = false
+	end)
+end
+
+-- ========== BARRA SUPERIOR ==========
+local barra = criar("Frame", {
+	Size = UDim2.new(1, 0, 0, BARRA.altura),
+	BackgroundColor3 = COR.card,
+	BackgroundTransparency = BARRA.transparencia,
+	BorderSizePixel = 0,
+}, main)
+arredondar(barra, MENU.raio)
+
+local titulo = criar("TextLabel", {
+	Size = UDim2.new(1, -99, 1, 0),
+	Position = UDim2.new(0, 8, 0, 0),
+	BackgroundTransparency = 1,
+	Text = TITULO,
+	TextColor3 = COR.texto,
+	TextSize = 10,
+	TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Font = Enum.Font.SourceSansBold,
+}, barra)
+criar("UITextSizeConstraint", {MaxTextSize = 14}, titulo)
+
+local function botaoBarra(texto, x, cor)
+	local b = criar("TextButton", {
+		Size = UDim2.new(0, 20, 0, 20),
+		Position = x,
+		BackgroundColor3 = cor,
+		Text = texto,
+		TextColor3 = COR.texto,
+		TextSize = 13,
+		Font = Enum.Font.SourceSansBold,
+	}, barra)
+	arredondar(b, 6)
+	return b
+end
+
+local btnFechar = botaoBarra("X", UDim2.new(1, -23, 0, 4), COR.fechar)
+local btnMinimizar = botaoBarra("–", UDim2.new(1, -45, 0, 4), COR.minimizar)
+local btnConfig = botaoBarra("⚔️", UDim2.new(1, -67, 0, 4), COR.azul)   -- página MENU DE ATAQUE
+local btnTele = botaoBarra("📍", UDim2.new(1, -89, 0, 4), COR.laranja) -- página TELEPORTE
+
+local btnAjustes = botaoBarra("⚙", UDim2.new(1, -111, 0, 4), COR.cinza) -- página CONFIGURAÇÃO
+titulo.Size = UDim2.new(1, -121, 1, 0)
+
+local function iconeBarra(btn, chave, emoji)
+	local img = criar("ImageLabel", {
+		Size = UDim2.new(0, 14, 0, 14),
+		Position = UDim2.new(0.5, -7, 0.5, -7),
+		BackgroundTransparency = 1,
+		Visible = false,
+	}, btn)
+	registrarIcone({alvo = btn, img = img, chave = chave, emoji = emoji})
+end
+
+iconeBarra(btnFechar, "fechar", "X")
+iconeBarra(btnMinimizar,
+	function() return minimizado and "expandir_contorno" or "seta_cima" end,
+	function() return minimizado and "+" or "–" end)
+iconeBarra(btnConfig,
+	function() return paginaAtual == "config" and "seta_esquerda" or "ataque" end,
+	function() return paginaAtual == "config" and "←" or "⚔️" end)
+iconeBarra(btnTele,
+	function() return paginaAtual == "tele" and "seta_esquerda" or "portal" end,
+	function() return paginaAtual == "tele" and "←" or "📍" end)
+iconeBarra(btnAjustes,
+	function() return paginaAtual == "ajustes" and "seta_esquerda" or "configuracao" end,
+	function() return paginaAtual == "ajustes" and "←" or "⚙" end)
+
+arrastar(barra, main)
+
+-- ========== PÁGINAS ==========
+local corpo = criar("Frame", {
+	Size = UDim2.new(1, 0, 1, -BARRA.altura),
+	Position = UDim2.new(0, 0, 0, BARRA.altura),
+	BackgroundTransparency = 1,
+	ClipsDescendants = true,
+}, main)
+
+local paginas = {}
+local titulos = {menu = TITULO, config = "MENU DE ATAQUE", tele = "TELEPORTE", ajustes = "CONFIGURAÇÃO"}
+
+local function criarLista(nome, emGrade)
+	local lista = criar("ScrollingFrame", {
+		Name = nome,
+		Size = UDim2.new(1, -10, 1, -8),
+		Position = UDim2.new(0, 5, 0, 4),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(),
+		Visible = false,
+	}, corpo)
+	if emGrade then
+		-- folga em cima e embaixo: a borda dos quadrados não fica cortada
+		criar("UIPadding", {
+			PaddingTop = UDim.new(0, 8),
+			PaddingBottom = UDim.new(0, 8),
+		}, lista)
+		criar("UIGridLayout", {
+			CellSize = UDim2.new(0, CARD.largura, 0, CEL_ALTURA),
+			CellPadding = UDim2.new(0, CARD.espaco, 0, CARD.espaco),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		}, lista)
+	else
+		criar("UIListLayout", {
+			Padding = UDim.new(0, 8),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		}, lista)
+	end
+	paginas[nome] = lista
+	return lista
+end
+
+local grade = criarLista("menu", true)      -- quadradinhos dos jogadores
+local listaConfig = criarLista("config")    -- interruptores de função
+local listaTele = criarLista("tele")        -- teleporte
+local listaAjustes = criarLista("ajustes")  -- perfil e fundos
+
+-- Botão do modo de quadrado (menu principal): apertou, aparece o personagem de cada jogador
+do
+	local barraModo = criar("Frame", {
+		Name = "BarraModo",
+		Size = UDim2.new(1, -10, 0, 26),
+		Position = UDim2.new(0, 5, 0, 4),
+		BackgroundTransparency = 1,
+	}, corpo)
+	grade.Position = UDim2.new(0, 5, 0, 34)
+	grade.Size = UDim2.new(1, -10, 1, -38)
+
+	local btnPers = criar("TextButton", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundColor3 = COR.card,
+		BorderSizePixel = 0,
+		Text = "🦸 Personagem: OFF",
+		TextColor3 = COR.texto,
+		TextSize = 12,
+		Font = Enum.Font.SourceSansBold,
+		AutoButtonColor = false,
+	}, barraModo)
+	arredondar(btnPers, 8)
+	local strPers = criar("UIStroke", {Color = COR.cinza, Thickness = 1.5}, btnPers)
+
+	definirPersonagem = function(v)
+		mostrarPersonagem = v
+		btnPers.Text = v and "🦸 Personagem: ON" or "🦸 Personagem: OFF"
+		btnPers.BackgroundColor3 = v and Color3.fromRGB(0, 70, 40) or COR.card
+		strPers.Color = v and COR.on or COR.cinza
+		if ajustarLayoutModo then ajustarLayoutModo() end
+		if v and atualizarPersonagens then task.defer(atualizarPersonagens) end
+	end
+	btnPers.MouseButton1Click:Connect(function() definirPersonagem(not mostrarPersonagem) end)
+end
+
+-- Cada botão da barra abre a sua página; apertando de novo (←) volta ao menu
+local function mostrarPagina(nome)
+	paginaAtual = nome
+	for n, frame in pairs(paginas) do frame.Visible = (n == nome) end
+	titulo.Text = titulos[nome]
+	local bm = corpo:FindFirstChild("BarraModo")
+	if bm then bm.Visible = (nome == "menu") end
+	atualizarIcones()
+end
+
+-- Minimizar: a barra continua visível. Tocar em qualquer botão de página
+-- com o menu minimizado abre o menu direto naquela página.
+local function definirMinimizado(v)
+	minimizado = v
+	corpo.Visible = not v
+	main.Size = UDim2.new(0, MENU.largura, 0, v and BARRA.altura or MENU.altura)
+	atualizarIcones()
+end
+
+local function abrirPagina(nome)
+	if minimizado then
+		definirMinimizado(false)
+		mostrarPagina(nome)
+	else
+		mostrarPagina(paginaAtual == nome and "menu" or nome)
+	end
+end
+
+btnMinimizar.MouseButton1Click:Connect(function() definirMinimizado(not minimizado) end)
+btnConfig.MouseButton1Click:Connect(function() abrirPagina("config") end)
+btnTele.MouseButton1Click:Connect(function() abrirPagina("tele") end)
+btnAjustes.MouseButton1Click:Connect(function() abrirPagina("ajustes") end)
+
+-- Botão novo: selo de ícone (emoji ou figurinha) + texto, com degradê e espaço
+local function novoBotao(ordem, pai, texto, cor, chave, emoji)
+	cor = cor or COR.azul
+	local btn = criar("TextButton", {
+		Size = UDim2.new(1, 0, 0, 38),
+		LayoutOrder = ordem,
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+	}, pai)
+	arredondar(btn, 10)
+	criar("UIStroke", {Color = cor, Thickness = 1.5, Transparency = 0.25}, btn)
+	criar("UIGradient", {
+		Color = ColorSequence.new(Color3.fromRGB(34, 34, 56), Color3.fromRGB(20, 20, 34)),
+		Rotation = 90,
+	}, btn)
+
+	local selo = criar("Frame", {
+		Size = UDim2.new(0, 28, 0, 28),
+		Position = UDim2.new(0, 6, 0.5, -14),
+		BackgroundColor3 = cor,
+		BackgroundTransparency = 0.7,
+		BorderSizePixel = 0,
+	}, btn)
+	arredondar(selo, 8)
+	local emojiLbl = criar("TextLabel", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		Text = emoji or "",
+		TextSize = 15,
+		TextColor3 = COR.texto,
+		Font = Enum.Font.SourceSansBold,
+	}, selo)
+	local img = criar("ImageLabel", {
+		Size = UDim2.new(0, 20, 0, 20),
+		Position = UDim2.new(0.5, -10, 0.5, -10),
+		BackgroundTransparency = 1,
+		Visible = false,
+	}, selo)
+	if chave then
+		registrarIcone({alvo = emojiLbl, img = img, chave = chave, emoji = emoji or ""})
+	end
+
+	local rotulo = criar("TextLabel", {
+		Size = UDim2.new(1, -48, 1, 0),
+		Position = UDim2.new(0, 42, 0, 0),
+		BackgroundTransparency = 1,
+		Text = texto or "",
+		TextColor3 = COR.texto,
+		TextSize = 13,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.SourceSansBold,
+	}, btn)
+
+	btn.MouseButton1Click:Connect(function() efeitoClique(btn, 1.03) end)
+	return btn, rotulo
+end
+
+-- Painel de categoria: cabeçalho com ícone + conteúdo. Cada botão fica na sua categoria.
+-- Retorna (conteúdo, painel)
+local function novoPainel(pagina, ordem, titulo, cor, chave, emoji)
+	local painel = criar("Frame", {
+		Size = UDim2.new(1, -6, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = ordem,
+		BackgroundColor3 = Color3.fromRGB(20, 20, 34),
+		BackgroundTransparency = 0.15,
+		BorderSizePixel = 0,
+	}, pagina)
+	arredondar(painel, 12)
+	criar("UIStroke", {Color = cor, Thickness = 1, Transparency = 0.5}, painel)
+	criar("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	}, painel)
+	criar("UIPadding", {
+		PaddingTop = UDim.new(0, 8),
+		PaddingBottom = UDim.new(0, 10),
+		PaddingLeft = UDim.new(0, 8),
+		PaddingRight = UDim.new(0, 8),
+	}, painel)
+
+	local cab = criar("Frame", {
+		Size = UDim2.new(1, 0, 0, 28),
+		LayoutOrder = 0,
+		BackgroundColor3 = cor,
+		BackgroundTransparency = 0.82,
+		BorderSizePixel = 0,
+	}, painel)
+	arredondar(cab, 9)
+	local faixa = criar("Frame", {
+		Size = UDim2.new(0, 4, 1, -12),
+		Position = UDim2.new(0, 6, 0, 6),
+		BackgroundColor3 = cor,
+		BorderSizePixel = 0,
+	}, cab)
+	arredondar(faixa, 2)
+	local emojiLbl = criar("TextLabel", {
+		Size = UDim2.new(0, 22, 1, 0),
+		Position = UDim2.new(0, 16, 0, 0),
+		BackgroundTransparency = 1,
+		Text = emoji or "",
+		TextSize = 14,
+		TextColor3 = COR.texto,
+		Font = Enum.Font.SourceSansBold,
+	}, cab)
+	local img = criar("ImageLabel", {
+		Size = UDim2.new(0, 18, 0, 18),
+		Position = UDim2.new(0, 18, 0.5, -9),
+		BackgroundTransparency = 1,
+		Visible = false,
+	}, cab)
+	if chave then
+		registrarIcone({alvo = emojiLbl, img = img, chave = chave, emoji = emoji or ""})
+	end
+	criar("TextLabel", {
+		Size = UDim2.new(1, -48, 1, 0),
+		Position = UDim2.new(0, 42, 0, 0),
+		BackgroundTransparency = 1,
+		Text = titulo,
+		TextColor3 = COR.texto,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.SourceSansBold,
+	}, cab)
+
+	local conteudo = criar("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 1,
+		BackgroundTransparency = 1,
+	}, painel)
+	criar("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	}, conteudo)
+	return conteudo, painel
+end
+
+-- Interruptor estilo ON/OFF (pílula verde com bolinha branca / cinza)
+local function novoInterruptor(ordem, pai, texto, cor, aoMudar)
+	local linha = criar("TextButton", {
+		Size = UDim2.new(1, 0, 0, 38),
+		LayoutOrder = ordem,
+		BackgroundColor3 = COR.card,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+	}, pai)
+	arredondar(linha, 10)
+	criar("UIStroke", {Color = cor or COR.azul, Thickness = 1.5}, linha)
+
+	criar("TextLabel", {
+		Size = UDim2.new(1, -62, 1, 0),
+		Position = UDim2.new(0, 8, 0, 0),
+		BackgroundTransparency = 1,
+		Text = texto,
+		TextColor3 = COR.texto,
+		TextSize = 12,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.SourceSansBold,
+	}, linha)
+
+	local trilho = criar("Frame", {
+		Size = UDim2.new(0, 46, 0, 22),
+		Position = UDim2.new(1, -52, 0.5, -11),
+		BackgroundColor3 = COR.cinza,
+		BorderSizePixel = 0,
+	}, linha)
+	arredondar(trilho, 11)
+
+	local rotulo = criar("TextLabel", {
+		Size = UDim2.new(0, 24, 1, 0),
+		Position = UDim2.new(1, -27, 0, 0),
+		BackgroundTransparency = 1,
+		Text = "OFF",
+		TextColor3 = COR.sub,
+		TextSize = 9,
+		Font = Enum.Font.SourceSansBold,
+	}, trilho)
+
+	local bola = criar("Frame", {
+		Size = UDim2.new(0, 18, 0, 18),
+		Position = UDim2.new(0, 2, 0.5, -9),
+		BackgroundColor3 = COR.texto,
+		BorderSizePixel = 0,
+	}, trilho)
+	arredondar(bola, 9)
+
+	local ligado = false
+	local function set(estado)
+		if estado == ligado then return end
+		ligado = estado
+		local info = TweenInfo.new(0.15)
+		TweenService:Create(bola, info, {
+			Position = ligado and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9),
+		}):Play()
+		TweenService:Create(trilho, info, {
+			BackgroundColor3 = ligado and COR.on or COR.cinza,
+		}):Play()
+		rotulo.Text = ligado and "ON" or "OFF"
+		rotulo.Position = ligado and UDim2.new(0, 3, 0, 0) or UDim2.new(1, -27, 0, 0)
+		rotulo.TextColor3 = ligado and COR.onTexto or COR.sub
+	end
+
+	linha.MouseButton1Click:Connect(function()
+		set(not ligado)
+		if aoMudar then aoMudar(ligado) end
+	end)
+
+	return {linha = linha, set = set}
+end
+
+-- Texto explicativo pequeno
+local function novoTexto(ordem, pai, texto, altura)
+	return criar("TextLabel", {
+		Size = UDim2.new(1, 0, 0, altura),
+		LayoutOrder = ordem,
+		BackgroundTransparency = 1,
+		Text = texto,
+		TextColor3 = COR.sub,
+		TextSize = 11,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Font = Enum.Font.SourceSans,
+	}, pai)
+end
+
+-- ========== PERSONAGEM QUE O JOGADOR ESTÁ USANDO ==========
+-- Tira acento, espaço, hífen e maiúsculas para comparar nomes
+local function normalizar(txt)
+	txt = string.lower(tostring(txt))
+	local mapa = {
+		["á"] = "a", ["à"] = "a", ["â"] = "a", ["ã"] = "a", ["é"] = "e", ["ê"] = "e",
+		["í"] = "i", ["ó"] = "o", ["ô"] = "o", ["õ"] = "o", ["ú"] = "u", ["ç"] = "c",
+		["Á"] = "a", ["Â"] = "a", ["Ã"] = "a", ["É"] = "e", ["Ê"] = "e", ["Í"] = "i",
+		["Ó"] = "o", ["Ô"] = "o", ["Õ"] = "o", ["Ú"] = "u", ["Ç"] = "c",
+	}
+	for k, v in pairs(mapa) do txt = txt:gsub(k, v) end
+	return (txt:gsub("[^%w]", ""))
+end
+
+for _, pers in ipairs(PERSONAGENS) do
+	pers.aliasN = {}
+	for _, a in ipairs(pers.alias) do table.insert(pers.aliasN, normalizar(a)) end
+end
+
+-- Procura um personagem dentro de um texto (nome ou ID da figura)
+local function acharPersonagem(texto)
+	for _, pers in ipairs(PERSONAGENS) do
+		if pers.icone and string.find(texto, pers.icone, 1, true) then return pers end
+	end
+	local n = normalizar(texto)
+	if n == "" then return nil end
+	local melhor, tam = nil, 0
+	for _, pers in ipairs(PERSONAGENS) do
+		for _, a in ipairs(pers.aliasN) do
+			if (n == a) or (#a >= 5 and string.find(n, a, 1, true))
+				or (#a == 4 and string.sub(n, 1, 4) == a) then
+				if #a > tam then melhor, tam = pers, #a end
+			end
+		end
+	end
+	return melhor
+end
+
+-- Junta tudo que o jogo guarda do jogador e do personagem dele (textos, valores, atributos)
+local function coletarTextos(plr)
+	local textos = {}
+	local function add(t)
+		if type(t) == "string" and t ~= "" and #t <= 120 then table.insert(textos, t) end
+	end
+	local function atributos(obj)
+		local ok, attrs = pcall(function() return obj:GetAttributes() end)
+		if not ok then return end
+		for k, v in pairs(attrs) do
+			if type(v) == "string" then
+				add(v)
+			elseif type(v) == "number" then
+				add(string.format("%.0f", v))
+			elseif v == true then
+				add(k)
+			end
+		end
+	end
+
+	atributos(plr)
+	for _, filho in ipairs(plr:GetChildren()) do
+		if filho.Name ~= "PlayerGui" then
+			if filho:IsA("Tool") then add(filho.Name) end
+			atributos(filho)
+			for _, d in ipairs(filho:GetDescendants()) do
+				if d:IsA("StringValue") then
+					add(d.Value)
+				elseif d:IsA("ObjectValue") then
+					add(d.Value and d.Value.Name)
+				elseif d:IsA("IntValue") or d:IsA("NumberValue") then
+					add(string.format("%.0f", d.Value))
+				elseif d:IsA("BoolValue") and d.Value then
+					add(d.Name)
+				end
+				atributos(d)
+			end
+		end
+	end
+
+	local char = plr.Character
+	if char then
+		atributos(char)
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then atributos(hum) end
+		for _, filho in ipairs(char:GetChildren()) do
+			if not filho:IsA("BasePart") then add(filho.Name) end
+		end
+	end
+	return textos
+end
+
+local function descobrirPersonagem(plr)
+	local ok, textos = pcall(coletarTextos, plr)
+	if not ok or type(textos) ~= "table" then return nil end
+	for _, t in ipairs(textos) do
+		local pers = acharPersonagem(t)
+		if pers then return pers end
+	end
+	return nil
+end
+
+-- ========== PÁGINA MENU DE ATAQUE ==========
+local pAuto = novoPainel(listaConfig, 1, "Ataques automáticos", COR.azul, "ataque", "⚔️")
+local swAtk = novoInterruptor(1, pAuto, "⚔️ Auto Ataque", COR.azul, function(v)
+	auto.attack = v
+end)
+local swE = novoInterruptor(2, pAuto, "🅴 Auto E", COR.laranja, function(v)
+	auto.e = v
+end)
+local swR = novoInterruptor(3, pAuto, "🆁 Auto R", COR.verde, function(v)
+	auto.r = v
+end)
+
+local pFarm = novoPainel(listaConfig, 2, "Modos de farm", COR.roxo, "roleta", "🎲")
+local swRandom = novoInterruptor(1, pFarm, "Farm farmar player", COR.roxo, function(v)
+	randomOn = v
+	if v then nearOn = false end
+	refresh()
+end)
+local swNear = novoInterruptor(2, pFarm, "Farma jogador próximo", COR.azul, function(v)
+	nearOn = v
+	if v then randomOn = false end
+	refresh()
+end)
+
+novoTexto(10, listaConfig, "Versão " .. VERSAO, 18)
+
+-- ========== PÁGINA TELEPORTE ==========
+local pPos = novoPainel(listaTele, 1, "Posição salva", COR.laranja, "casa", "🏠")
+local tpBtn = novoBotao(1, pPos, "Teleportar para a posição", COR.laranja, "portal", "📍")
+
+-- Marca a posição atual como a posição salva (usada no teleporte, ao matar e ao nascer)
+local marcarBtn, marcarRotulo = novoBotao(2, pPos, "Marcar posição aqui", COR.verde, "verificacao", "📌")
+marcarBtn.MouseButton1Click:Connect(function()
+	local hrp = getHRP(LocalPlayer.Character)
+	if not hrp then return end
+	posSalva = hrp.Position
+	posMarcada = true
+	marcarRotulo.Text = "Posição marcada!"
+	task.delay(1.2, function()
+		if marcarBtn.Parent then marcarRotulo.Text = "Marcar posição aqui" end
+	end)
+end)
+
+local swTpMatar = novoInterruptor(3, pPos, "Teleportar ao matar", COR.laranja, function(v)
+	tpAoMatar = v
+end)
+novoTexto(4, pPos,
+	"Ativado: quando o jogador que você está farmando morrer, você é teleportado "
+	.. "para a posição salva. Desativado: você continua no mapa, no lugar onde ele morreu.", 84)
+
+local pRein = novoPainel(listaTele, 2, "Reiniciar", COR.verde, "seta_voltar_contorno", "🔄")
+local swReiniciar = novoInterruptor(1, pRein, "Reiniciar ao levar dano", COR.verde, function(v)
+	reiniciarDano = v
+end)
+novoTexto(2, pRein,
+	"Ativado: ao levar dano você reinicia na hora. Se você marcou uma posição, "
+	.. "nasce nela (e não no lobby).", 70)
+
+-- Quadrados dos ADMs que estão no servidor (também aparecem no menu principal)
+local conteudoAdm, cabAdm = novoPainel(listaTele, 3, "ADMs no servidor", COR.ouro, "coroa", "👑")
+cabAdm.Visible = false
+
+local gradeAdm = criar("Frame", {
+	Size = UDim2.new(1, 0, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	LayoutOrder = 1,
+	BackgroundTransparency = 1,
+}, conteudoAdm)
+criar("UIPadding", {PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)}, gradeAdm)
+criar("UIGridLayout", {
+	CellSize = UDim2.new(0, CARD.largura, 0, CEL_ALTURA),
+	CellPadding = UDim2.new(0, CARD.espaco, 0, CARD.espaco),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+}, gradeAdm)
+local qtdAdm = 0
+
+local pAviso = novoPainel(listaTele, 4, "Aviso", COR.fechar, "exclamacao", "⚠️")
+novoTexto(1, pAviso,
+	"O anti-void ainda está em desenvolvimento. Você ainda pode morrer ou cair no void.", 44)
+
+-- ========== PÁGINA CONFIGURAÇÃO ==========
+local ARQUIVO_PERFIL = "ArenaHabilidades_" .. LocalPlayer.UserId .. ".json"
+local fundoAtual = nil   -- ID do fundo escolhido (nil = fundo original)
+local quadrosFundo = {}  -- {id, stroke}
+
+-- ---- Perfil ----
+local pPerfil = novoPainel(listaAjustes, 1, "Perfil", COR.azul, "botao_gui", "👤")
+
+local perfil = criar("Frame", {
+	Size = UDim2.new(1, 0, 0, 58),
+	LayoutOrder = 1,
+	BackgroundColor3 = COR.card,
+	BorderSizePixel = 0,
+}, pPerfil)
+arredondar(perfil, 10)
+
+local perfilFoto = criar("ImageLabel", {
+	Size = UDim2.new(0, 44, 0, 44),
+	Position = UDim2.new(0, 7, 0.5, -22),
+	BackgroundColor3 = COR.fundo,
+	BorderSizePixel = 0,
+	Image = "",
+}, perfil)
+arredondar(perfilFoto, 8)
+carregarFoto(LocalPlayer, perfilFoto)
+
+criar("TextLabel", {
+	Size = UDim2.new(1, -64, 0, 20),
+	Position = UDim2.new(0, 58, 0, 7),
+	BackgroundTransparency = 1,
+	Text = LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")",
+	TextColor3 = COR.texto,
+	TextSize = 13,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	Font = Enum.Font.SourceSansBold,
+}, perfil)
+
+local perfilStatus = criar("TextLabel", {
+	Size = UDim2.new(1, -64, 0, 26),
+	Position = UDim2.new(0, 58, 0, 28),
+	BackgroundTransparency = 1,
+	Text = "Perfil: " .. LocalPlayer.Name,
+	TextColor3 = COR.sub,
+	TextSize = 10,
+	TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	Font = Enum.Font.SourceSans,
+}, perfil)
+
+local function status(txt)
+	perfilStatus.Text = txt
+end
+
+-- Aplica (ou remove) o fundo do menu e marca o quadradinho escolhido
+local function aplicarFundo(id)
+	fundoAtual = id and idTexto(id) or nil
+	if fundoAtual then
+		local escolhido = fundoAtual
+		fundoImg.Image = miniatura(escolhido, 150) -- aparece na hora (já carregada)
+		fundoImg.Visible = true
+		task.spawn(function() -- troca pela versão grande quando ela carregar
+			preCarregar({miniatura(escolhido, 420)})
+			if fundoAtual == escolhido then fundoImg.Image = miniatura(escolhido, 420) end
+		end)
+	else
+		fundoImg.Image = ""
+		fundoImg.Visible = false
+	end
+	for _, q in ipairs(quadrosFundo) do
+		q.stroke.Color = (fundoAtual and q.id == fundoAtual) and COR.on or COR.azul
+	end
+end
+
+-- ---- Quadrados dos jogadores (modo Normal / Próximos) ----
+local pQuad = novoPainel(listaAjustes, 2, "Quadrados dos jogadores", COR.laranja, "expandir_contorno", "🔲")
+novoTexto(1, pQuad,
+	"Normal: a ordem de sempre. Próximos: quem está perto de você sobe para os primeiros "
+	.. "quadrados, com borda verde forte (bem perto) ou verde fraco (perto). "
+	.. "O botão Personagem, no topo do menu principal, mostra o personagem de cada jogador "
+	.. "ao lado da foto (a figura, ou o título quando ainda não tem figura).", 128)
+
+local linhaModo = criar("Frame", {
+	Size = UDim2.new(1, 0, 0, 34),
+	LayoutOrder = 2,
+	BackgroundTransparency = 1,
+}, pQuad)
+criar("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	Padding = UDim.new(0, 8),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	VerticalAlignment = Enum.VerticalAlignment.Center,
+}, linhaModo)
+
+local botoesModo = {}
+local function aplicarModoQuadros(modo)
+	modoQuadros = modo
+	for nome, b in pairs(botoesModo) do
+		local ativo = (nome == modo)
+		b.btn.BackgroundColor3 = ativo and Color3.fromRGB(0, 70, 40) or COR.card
+		b.stroke.Color = ativo and COR.on or COR.cinza
+	end
+	for _, lista in pairs(cartoes) do
+		for _, c in ipairs(lista) do
+			c.cel.LayoutOrder = 0
+			c.prox = 0
+		end
+	end
+	if ajustarLayoutModo then ajustarLayoutModo() end
+	if refresh then refresh() end
+end
+
+local function botaoModo(ordem, texto, modo)
+	local b = criar("TextButton", {
+		Size = UDim2.new(0.5, -4, 1, 0),
+		LayoutOrder = ordem,
+		BackgroundColor3 = COR.card,
+		BorderSizePixel = 0,
+		Text = texto,
+		TextColor3 = COR.texto,
+		TextSize = 12,
+		Font = Enum.Font.SourceSansBold,
+		AutoButtonColor = false,
+	}, linhaModo)
+	arredondar(b, 10)
+	local st = criar("UIStroke", {Color = COR.cinza, Thickness = 1.5}, b)
+	botoesModo[modo] = {btn = b, stroke = st}
+	b.MouseButton1Click:Connect(function() aplicarModoQuadros(modo) end)
+end
+botaoModo(1, "Normal", "normal")
+botaoModo(2, "Próximos", "proximos")
+aplicarModoQuadros("normal")
+
+novoTexto(3, pQuad,
+	"Embaixo de cada quadrado tem o botão FARM: ligado = os modos de farm podem pegar "
+	.. "o jogador; desligado = ignoram. Jogadores começam ligados e ADMs começam desligados. "
+	.. "Tocando no quadrado você farma mesmo com o botão desligado.", 108)
+
+-- Depuração: mostra o que o jogo guarda do SEU personagem (ajuda a achar o personagem equipado)
+local depurarBtn = novoBotao(4, pQuad, "Ver dados do meu personagem", COR.cinza, "ferramentas", "🔎")
+local depurarTxt = novoTexto(5, pQuad,
+	"Toque no botão para ver o que o jogo guarda do seu personagem equipado.", 120)
+depurarBtn.MouseButton1Click:Connect(function()
+	local textos = coletarTextos(LocalPlayer)
+	local pers = descobrirPersonagem(LocalPlayer)
+	print("[Arena] Personagem detectado:", pers and pers.nome or "nenhum")
+	for i, t in ipairs(textos) do print("[Arena]", i, t) end
+	local amostra = {}
+	for i = 1, math.min(#textos, 14) do amostra[i] = textos[i] end
+	depurarTxt.Text = "Detectado: " .. (pers and pers.nome or "nenhum")
+		.. "\nCampos (" .. #textos .. "): " .. table.concat(amostra, ", ")
+end)
+
+-- ---- Personalizar menu (ícones + animação de carregamento) ----
+local pPers = novoPainel(listaAjustes, 3, "Personalizar menu", COR.roxo, "ferramentas", "🛠️")
+local swIcones
+local function aplicarPersonalizacao(v, animar)
+	local function aplicar()
+		iconesOn = v
+		atualizarIcones()
+		if swIcones then swIcones.set(v) end
+	end
+	if animar and not animando then
+		animarCarregamento(aplicar)
+	else
+		aplicar()
+	end
+end
+swIcones = novoInterruptor(1, pPers, "Ícones personalizados", COR.roxo, function(v)
+	aplicarPersonalizacao(v, true)
+end)
+novoTexto(2, pPers,
+	"Troca os ícones do menu pelas suas figurinhas. Ao mudar, o menu escurece e uma barra "
+	.. "carrega o seu menu. Tudo isso pode ser salvo no perfil.", 84)
+
+-- ---- Fundos ----
+local pFundos = novoPainel(listaAjustes, 4, "Fundos", COR.ouro, "livros", "📚")
+
+local removerBtn = novoBotao(1, pFundos, "Voltar ao fundo original", COR.fechar, "lixeira", "🗑️")
+removerBtn.MouseButton1Click:Connect(function()
+	aplicarFundo(nil)
+	status("Fundo original de volta. Toque em Salvar para guardar no perfil.")
+end)
+
+-- Barra de pesquisa das tabelas (ex.: Gojo, Sukuna)
+local busca = criar("TextBox", {
+	Size = UDim2.new(1, 0, 0, 32),
+	LayoutOrder = 2,
+	BackgroundColor3 = COR.card,
+	BorderSizePixel = 0,
+	PlaceholderText = "🔍 Pesquisar tabela (ex.: Gojo)",
+	PlaceholderColor3 = COR.sub,
+	Text = "",
+	TextColor3 = COR.texto,
+	TextSize = 13,
+	Font = Enum.Font.SourceSansBold,
+	ClearTextOnFocus = false,
+}, pFundos)
+arredondar(busca, 10)
+criar("UIStroke", {Color = COR.laranja, Thickness = 1.5, Transparency = 0.2}, busca)
+
+-- Tabelas de fundos: cada personagem só tem os quadradinhos da própria tabela
+local tabelas = criar("Frame", {
+	Size = UDim2.new(1, 0, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	LayoutOrder = 3,
+	BackgroundTransparency = 1,
+}, pFundos)
+criar("UIListLayout", {
+	Padding = UDim.new(0, 10),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+}, tabelas)
+
+local secoes = {}
+for i, t in ipairs(FUNDOS) do
+	local sec = criar("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = i,
+		BackgroundColor3 = COR.card,
+		BackgroundTransparency = 0.2,
+		BorderSizePixel = 0,
+	}, tabelas)
+	arredondar(sec, 12)
+	criar("UIStroke", {Color = COR.ouro, Thickness = 1, Transparency = 0.6}, sec)
+	criar("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	}, sec)
+	criar("UIPadding", {
+		PaddingTop = UDim.new(0, 8),
+		PaddingBottom = UDim.new(0, 10),
+		PaddingLeft = UDim.new(0, 8),
+		PaddingRight = UDim.new(0, 8),
+	}, sec)
+
+	-- Cabeçalho da tabela: faixa dourada + nome grande + quantidade
+	local cab = criar("Frame", {
+		Size = UDim2.new(1, 0, 0, 28),
+		LayoutOrder = 1,
+		BackgroundTransparency = 1,
+	}, sec)
+	local faixa = criar("Frame", {
+		Size = UDim2.new(0, 4, 1, 0),
+		BackgroundColor3 = COR.ouro,
+		BorderSizePixel = 0,
+	}, cab)
+	arredondar(faixa, 2)
+	criar("TextLabel", {
+		Size = UDim2.new(1, -90, 1, 0),
+		Position = UDim2.new(0, 12, 0, 0),
+		BackgroundTransparency = 1,
+		Text = t.nome,
+		TextColor3 = COR.texto,
+		TextSize = 17,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.SourceSansBold,
+	}, cab)
+	criar("TextLabel", {
+		Size = UDim2.new(0, 76, 1, 0),
+		Position = UDim2.new(1, -76, 0, 0),
+		BackgroundTransparency = 1,
+		Text = #t.ids .. (#t.ids == 1 and " fundo" or " fundos"),
+		TextColor3 = COR.sub,
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Font = Enum.Font.SourceSans,
+	}, cab)
+
+	local gradeT = criar("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = 2,
+		BackgroundTransparency = 1,
+	}, sec)
+	criar("UIPadding", {PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)}, gradeT)
+	criar("UIGridLayout", {
+		CellSize = UDim2.new(0, FUNDO_TAM, 0, FUNDO_TAM),
+		CellPadding = UDim2.new(0, 10, 0, 10),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	}, gradeT)
+
+	for _, id in ipairs(t.ids) do
+		local quad = criar("ImageButton", {
+			BackgroundColor3 = COR.fundo,
+			BorderSizePixel = 0,
+			Image = miniatura(id, 150),
+			ScaleType = Enum.ScaleType.Crop,
+			AutoButtonColor = false,
+		}, gradeT)
+		arredondar(quad, 10)
+		local st = criar("UIStroke", {Color = COR.azul, Thickness = 2}, quad)
+		table.insert(quadrosFundo, {id = idTexto(id), stroke = st})
+		quad.Activated:Connect(function()
+			efeitoClique(quad, 1.05)
+			aplicarFundo(id)
+			status("Fundo escolhido. Toque em Salvar para guardar no perfil.")
+		end)
+	end
+
+	secoes[i] = {frame = sec, nome = t.nome}
+end
+
+busca:GetPropertyChangedSignal("Text"):Connect(function()
+	local q = string.lower(busca.Text):match("^%s*(.-)%s*$")
+	for _, sec in ipairs(secoes) do
+		sec.frame.Visible = (q == "") or (string.find(string.lower(sec.nome), q, 1, true) ~= nil)
+	end
+end)
+
+-- ---- Salvar (fica logo abaixo do perfil) ----
+local salvarBtn = novoBotao(2, pPerfil, "Salvar configuração", COR.verde, "salvar", "💾")
+salvarBtn.MouseButton1Click:Connect(function()
+	if not writefile then
+		status("Seu executor não permite salvar arquivos.")
+		return
+	end
+	local ok = pcall(function()
+		writefile(ARQUIVO_PERFIL, HttpService:JSONEncode({
+			perfil = LocalPlayer.Name,
+			fundo = fundoAtual,
+			icones = iconesOn,
+			quadros = modoQuadros,
+			personagem = mostrarPersonagem,
+		}))
+	end)
+	status(ok and ("✅ Configuração salva no perfil " .. LocalPlayer.Name)
+		or "Não foi possível salvar a configuração.")
+end)
+
+-- Ao abrir o menu: carrega a configuração salva do perfil e mostra de quem é
+local function carregarConfig()
+	local ok, dados = pcall(function()
+		if not (isfile and readfile) or not isfile(ARQUIVO_PERFIL) then return nil end
+		return HttpService:JSONDecode(readfile(ARQUIVO_PERFIL))
+	end)
+	if ok and type(dados) == "table" then
+		if dados.fundo then aplicarFundo(dados.fundo) end
+		if dados.quadros == "normal" or dados.quadros == "proximos" then
+			aplicarModoQuadros(dados.quadros)
+		end
+		if dados.personagem then definirPersonagem(true) end
+		status("✅ Configuração carregada do perfil " .. tostring(dados.perfil or LocalPlayer.Name))
+		if dados.icones then
+			task.defer(function() aplicarPersonalizacao(true, true) end)
+		end
+	else
+		status("Nenhuma configuração salva neste perfil.")
+	end
+end
+carregarConfig()
+
+-- ========== QUADRADOS DOS JOGADORES ==========
+-- Pinta borda, nome e botão FARM: verde = farmando | dourado = ADM | azul = normal
+-- No lobby o nome vira "LOBBY" em amarelo (a foto fica normal)
+local function pintarCartao(plr, c)
+	local on = (plr == target)
+	local prox = (modoQuadros == "proximos") and (c.prox or 0) or 0
+	local corBorda
+	if on then
+		corBorda = COR.on
+	elseif prox == 2 then
+		corBorda = COR.verdeForte
+	elseif prox == 1 then
+		corBorda = COR.verdeFraco
+	else
+		corBorda = c.adm and COR.ouro or COR.azul
+	end
+	c.quad.BorderColor3 = corBorda
+	if c.lobby then
+		c.nome.Text = "LOBBY"
+		c.nome.TextColor3 = COR.ouro
+	else
+		c.nome.Text = textoNome(plr)
+		c.nome.TextColor3 = on and COR.on or COR.texto
+	end
+	local f = podeFarmarAuto(plr)
+	c.btn.Text = f and "FARM ON" or "FARM OFF"
+	c.btn.BackgroundColor3 = f and COR.on or COR.cinza
+end
+
+-- Layout do quadrado: normal/próximos = foto centralizada; personagem = foto + personagem ao lado
+local function ajustarCartao(c)
+	if mostrarPersonagem then
+		c.foto.Size = UDim2.new(0, 44, 0, 44)
+		c.foto.Position = UDim2.new(0, 6, 0, 5)
+		c.caixa.Visible = true
+		c.nome.Size = UDim2.new(1, -8, 0, CARD.altura - 58)
+		c.nome.Position = UDim2.new(0, 4, 0, 54)
+	else
+		c.foto.Size = UDim2.new(0, CARD.foto, 0, CARD.foto)
+		c.foto.Position = UDim2.new(0.5, -CARD.foto / 2, 0, 4)
+		c.caixa.Visible = false
+		c.nome.Size = UDim2.new(1, -4, 0, CARD.altura - CARD.foto - 9)
+		c.nome.Position = UDim2.new(0, 2, 0, CARD.foto + 6)
+	end
+end
+
+-- Mostra o personagem: a figura quando tem ID, senão o título
+local aplicarPersonagem
+do
+	local cacheDecal = {}
+
+	-- Se o ID for de "Decal", descobre o ID da imagem que está dentro dele
+	local function resolverDecal(id)
+		id = idTexto(id)
+		if cacheDecal[id] ~= nil then return cacheDecal[id] or nil end
+		local ok, tex = pcall(function()
+			local objs = game:GetObjects("rbxassetid://" .. id)
+			local o = objs and objs[1]
+			if not o then return nil end
+			if o:IsA("Decal") or o:IsA("Texture") then return o.Texture end
+			local d = o:FindFirstChildWhichIsA("Decal", true)
+			return d and d.Texture or nil
+		end)
+		cacheDecal[id] = (ok and tex and tex ~= "") and tex or false
+		return cacheDecal[id] or nil
+	end
+
+	-- Mostra o personagem: a figura quando tem ID, senão o título.
+	-- A figura é insistente: se não carregar, troca de formato a cada 3 segundos
+	-- (miniatura, imagem direta, Decal) até carregar. Enquanto isso o título fica à mostra.
+	aplicarPersonagem = function(c, pers)
+		local chave = pers and pers.nome or "?"
+		if c.persChave == chave then return end
+		c.persChave = chave
+		if pers and pers.icone then
+			c.tituloLbl.Text = pers.nome
+			c.tituloLbl.Visible = true
+			c.iconeImg.Image = miniatura(pers.icone, 150)
+			c.iconeImg.Visible = true
+			task.spawn(function()
+				local formato, desde = 1, os.clock()
+				while c.persChave == chave and c.iconeImg.Parent do
+					if c.iconeImg.IsLoaded and c.iconeImg.Image ~= "" then
+						c.tituloLbl.Visible = false
+						return
+					end
+					if os.clock() - desde > (formato == 1 and 6 or 3) then
+						desde = os.clock()
+						formato = formato % 3 + 1
+						if formato == 1 then
+							c.iconeImg.Image = miniatura(pers.icone, 150)
+						elseif formato == 2 then
+							c.iconeImg.Image = "rbxassetid://" .. idTexto(pers.icone)
+						else
+							local tex = resolverDecal(pers.icone)
+							if tex then c.iconeImg.Image = tex end
+						end
+					end
+					task.wait(0.25)
+				end
+			end)
+		else
+			c.iconeImg.Visible = false
+			c.tituloLbl.Text = pers and pers.nome or "?"
+			c.tituloLbl.Visible = true
+		end
+	end
+end
+
+local function montarCartao(plr, pai)
+	local adm = ehAdm(plr)
+
+	-- Célula: quadrado em cima + botão FARM embaixo
+	local cel = criar("Frame", {
+		Name = plr.Name,
+		BackgroundTransparency = 1,
+	}, pai)
+
+	-- Quadrado de cantos retos com borda de verdade (sem corte)
+	local quad = criar("TextButton", {
+		Size = UDim2.new(1, 0, 0, CARD.altura),
+		BackgroundColor3 = COR.card,
+		BorderSizePixel = CARD.borda,
+		BorderMode = Enum.BorderMode.Inset,
+		BorderColor3 = adm and COR.ouro or COR.azul,
+		Text = "",
+		AutoButtonColor = false,
+	}, cel)
+
+	local foto = criar("ImageLabel", {
+		Size = UDim2.new(0, CARD.foto, 0, CARD.foto),
+		Position = UDim2.new(0.5, -CARD.foto / 2, 0, 4),
+		BackgroundColor3 = COR.fundo,
+		BorderSizePixel = 0,
+		Image = "",
+	}, quad)
+
+	local nome = criar("TextLabel", {
+		Size = UDim2.new(1, -4, 0, CARD.altura - CARD.foto - 9),
+		Position = UDim2.new(0, 2, 0, CARD.foto + 6),
+		BackgroundTransparency = 1,
+		Text = textoNome(plr),
+		TextColor3 = COR.texto,
+		TextScaled = true,
+		Font = Enum.Font.SourceSansBold,
+	}, quad)
+	criar("UITextSizeConstraint", {MaxTextSize = 10}, nome)
+
+	-- Caixa do personagem (só aparece no modo Personagem): figura ou título
+	local caixa = criar("Frame", {
+		Size = UDim2.new(0, 44, 0, 44),
+		Position = UDim2.new(1, -50, 0, 5),
+		BackgroundColor3 = COR.fundo,
+		BorderSizePixel = 0,
+		Visible = false,
+	}, quad)
+	local iconeImg = criar("ImageLabel", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		ScaleType = Enum.ScaleType.Fit,
+		Visible = false,
+		ZIndex = 2,
+	}, caixa)
+	local tituloLbl = criar("TextLabel", {
+		Size = UDim2.new(1, -4, 1, -4),
+		Position = UDim2.new(0, 2, 0, 2),
+		BackgroundTransparency = 1,
+		Text = "?",
+		TextColor3 = COR.ouro,
+		TextScaled = true,
+		TextWrapped = true,
+		Font = Enum.Font.SourceSansBold,
+	}, caixa)
+	criar("UITextSizeConstraint", {MaxTextSize = 11, MinTextSize = 5}, tituloLbl)
+
+	-- Botão FARM embaixo do quadrado
+	local btn = criar("TextButton", {
+		Size = UDim2.new(1, 0, 0, CARD.botao),
+		Position = UDim2.new(0, 0, 0, CARD.altura + 3),
+		BackgroundColor3 = COR.on,
+		BorderSizePixel = 0,
+		Text = "FARM ON",
+		TextColor3 = COR.texto,
+		TextSize = 10,
+		Font = Enum.Font.SourceSansBold,
+		AutoButtonColor = false,
+	}, cel)
+
+	carregarFoto(plr, foto)
+
+	btn.Activated:Connect(function()
+		farmavel[plr] = not podeFarmarAuto(plr)
+		-- desligou: para o farm nele, se estiver farmando
+		if not farmavel[plr] and target == plr then target = nil end
+		refresh()
+	end)
+
+	local toques = {}
+	quad.Activated:Connect(function()
+		efeitoClique(quad)
+
+		-- ADM: 1 toque liga o farm, 1 toque desliga (e volta para a posição salva)
+		if adm then
+			if target == plr then
+				target = nil
+				local char = LocalPlayer.Character
+				local hrp = getHRP(char)
+				if hrp then
+					char:PivotTo(CFrame.new(posSalva))
+					hrp.AssemblyLinearVelocity = Vector3.zero
+				end
+				refresh()
+			else
+				alternarFarm(plr)
+			end
+			return
+		end
+
+		-- Outros jogadores: 3 toques seguidos = liga/desliga o farm
+		local agora = os.clock()
+		table.insert(toques, agora)
+		while #toques > 0 and agora - toques[1] > TOQUES.tempo do
+			table.remove(toques, 1)
+		end
+		if #toques >= TOQUES.quantidade then
+			toques = {}
+			alternarFarm(plr)
+		end
+	end)
+
+	local c = {
+		cel = cel, quad = quad, nome = nome, btn = btn, foto = foto,
+		caixa = caixa, iconeImg = iconeImg, tituloLbl = tituloLbl,
+		adm = adm, lobby = false, prox = 0,
+	}
+	ajustarCartao(c)
+	pintarCartao(plr, c)
+	return c
+end
+
+-- Cada jogador tem um quadrado no menu principal.
+-- Os ADMs têm um segundo quadrado na página TELEPORTE.
+local function criarCartao(plr)
+	if plr == LocalPlayer or cartoes[plr] then return end
+	farmavel[plr] = not ehAdm(plr) -- jogador liga, ADM desliga
+	local lista = {montarCartao(plr, grade)}
+	if ehAdm(plr) then
+		table.insert(lista, montarCartao(plr, gradeAdm))
+		qtdAdm += 1
+		cabAdm.Visible = true
+	end
+	cartoes[plr] = lista
+end
+
+local function removerCartao(plr)
+	local lista = cartoes[plr]
+	if lista then
+		for _, c in ipairs(lista) do c.cel:Destroy() end
+		cartoes[plr] = nil
+		farmavel[plr] = nil
+		if ehAdm(plr) then
+			qtdAdm -= 1
+			cabAdm.Visible = qtdAdm > 0
+		end
+	end
+	if target == plr then target = nil end
+end
+
+-- Muda o tamanho das células e o layout de cada quadrado conforme o modo
+ajustarLayoutModo = function()
+	local largura = mostrarPersonagem and CARD.larguraPers or CARD.largura
+	for _, g in ipairs({grade, gradeAdm}) do
+		local lay = g:FindFirstChildOfClass("UIGridLayout")
+		if lay then lay.CellSize = UDim2.new(0, largura, 0, CEL_ALTURA) end
+	end
+	for _, lista in pairs(cartoes) do
+		for _, c in ipairs(lista) do ajustarCartao(c) end
+	end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do criarCartao(p) end
+ajustarLayoutModo()
+ligar(Players.PlayerAdded, criarCartao)
+ligar(Players.PlayerRemoving, removerCartao)
+
+-- ========== VISUAL ON/OFF ==========
+refresh = function()
+	swRandom.set(randomOn)
+	swNear.set(nearOn)
+	for plr, lista in pairs(cartoes) do
+		for _, c in ipairs(lista) do pintarCartao(plr, c) end
+	end
+end
+
+-- Marca "LOBBY" no quadrado de quem está na base do lobby
+task.spawn(function()
+	while vivo and task.wait(0.5) do
+		for plr, lista in pairs(cartoes) do
+			local hrp = getHRP(plr.Character)
+			local dentro = (hrp ~= nil) and noLobby(hrp.Position)
+			for _, c in ipairs(lista) do
+				if dentro ~= c.lobby then
+					c.lobby = dentro
+					pintarCartao(plr, c)
+				end
+			end
+		end
+	end
+end)
+
+-- Modo "Próximos": quem está perto sobe para os primeiros quadrados, borda verde forte/fraca
+task.spawn(function()
+	while vivo and task.wait(0.4) do
+		if modoQuadros == "proximos" then
+			local meu = getHRP(LocalPlayer.Character)
+			for plr, lista in pairs(cartoes) do
+				local hrp = getHRP(plr.Character)
+				local d = (meu and hrp) and (hrp.Position - meu.Position).Magnitude or math.huge
+				local prox = (d <= PROX.forte and 2) or (d <= PROX.fraco and 1) or 0
+				for _, c in ipairs(lista) do
+					c.cel.LayoutOrder = (d == math.huge) and 100000 or math.floor(d)
+					if c.prox ~= prox then
+						c.prox = prox
+						pintarCartao(plr, c)
+					end
+				end
+			end
+		end
+	end
+end)
+
+-- Personagem de cada jogador: atualiza ao ligar o botão e depois a cada 1 segundo
+atualizarPersonagens = function()
+	for plr, lista in pairs(cartoes) do
+		local pers = descobrirPersonagem(plr)
+		for _, c in ipairs(lista) do aplicarPersonagem(c, pers) end
+	end
+end
+
+task.spawn(function()
+	while vivo and task.wait(1) do
+		if mostrarPersonagem then atualizarPersonagens() end
+	end
+end)
+
+-- ========== BOTÕES ==========
+-- Teleportar para a posição salva
+tpBtn.MouseButton1Click:Connect(function()
+	local hrp = getHRP(LocalPlayer.Character)
+	if hrp then
+		target = nil
+		hrp.Parent:PivotTo(CFrame.new(posSalva))
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		refresh()
+	end
+end)
+
+-- Fechar: desliga tudo e apaga as bases
+local function fecharTudo()
+	vivo = false
+	target = nil
+	auto.attack, auto.e, auto.r = false, false, false
+	for _, c in ipairs(conexoes) do c:Disconnect() end
+	if baseParte then baseParte:Destroy() end
+	removerBaseSegura()
+	gui:Destroy()
+end
+btnFechar.MouseButton1Click:Connect(fecharTudo)
+
+-- Interruptor remoto em tempo real: se o status.txt virar "off", o menu some
+task.spawn(function()
+	local ciclos = 0
+	while vivo do
+		task.wait(20)
+		ciclos += 1
+		if vivo and ciclos % 3 == 0 and desligadoRemoto() then
+			print("Script desativado pelo criador.")
+			fecharTudo()
+			break
+		end
+	end
+end)
+
+-- ========== LOOP PRINCIPAL E NASCIMENTO ==========
+-- Toda vez que você nasce: cria a base do lobby e limpa a base de segurança
+-- Reiniciar ao levar dano: se a vida cair, zera a vida (reinicia)
+local function vigiarDano(char)
+	local hum = char:WaitForChild("Humanoid", 5)
+	if not hum then return end
+	local ultimaVida = hum.Health
+	hum.HealthChanged:Connect(function(vida)
+		if reiniciarDano and vida > 0 and vida < ultimaVida then
+			hum.Health = 0
+		end
+		ultimaVida = vida
+	end)
+end
+
+-- Ao renascer com "reiniciar ao dano" ligado e posição marcada,
+-- você nasce na posição marcada (não no lobby)
+local function nascerNaPosicao(char)
+	if not (reiniciarDano and posMarcada) then return end
+	local hrp = char:WaitForChild("HumanoidRootPart", 5)
+	if not hrp then return end
+	local firmes = 0
+	for _ = 1, 25 do
+		if not vivo or not hrp.Parent then return end
+		if (hrp.Position - posSalva).Magnitude > 30 then
+			char:PivotTo(CFrame.new(posSalva))
+			firmes = 0
+		else
+			firmes += 1
+			if firmes >= 4 then return end
+		end
+		task.wait(0.1)
+	end
+end
+
+criarBase()
+task.spawn(vigiarDano, startChar)
+ligar(LocalPlayer.CharacterAdded, function(char)
+	criarBase()
+	removerBaseSegura() -- será criada de novo ao sair do lobby
+	task.spawn(vigiarDano, char)
+	task.spawn(nascerNaPosicao, char)
+end)
+
+-- Todo frame: bases + farm
+ligar(RunService.Heartbeat, function()
+	if not vivo then return end
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = getHRP(char)
+	if not hum or not hrp or hum.Health <= 0 then return end
+	atualizarBases(char, hrp, hum)
+	farmar(hrp)
+end)
+
+-- Segunda vigia, antes da física de cada frame: pega a queda mais cedo
+ligar(RunService.Stepped, function()
+	if not vivo then return end
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = getHRP(char)
+	if not hum or not hrp or hum.Health <= 0 then return end
+	atualizarBases(char, hrp, hum)
+	if target then seguirAlvo(char, hrp) end
+end)
+
+-- Terceira passada, logo antes de desenhar o frame: sem "vultos" na tela
+ligar(RunService.RenderStepped, function()
+	if not vivo or not target then return end
+	local char = LocalPlayer.Character
+	local hrp = getHRP(char)
+	if hrp then seguirAlvo(char, hrp) end
+end)
+
+-- Pré-carga em segundo plano: figuras dos personagens, fundos e ícones
+task.spawn(function()
+	local urls = {}
+	for _, pers in ipairs(PERSONAGENS) do
+		if pers.icone then table.insert(urls, miniatura(pers.icone, 150)) end
+	end
+	for _, t in ipairs(FUNDOS) do
+		for _, id in ipairs(t.ids) do table.insert(urls, miniatura(id, 150)) end
+	end
+	preCarregar(urls)
+
+	urls = {}
+	for _, id in pairs(ICONES) do table.insert(urls, miniatura(id, 150)) end
+	preCarregar(urls)
+
+	urls = {}
+	for _, t in ipairs(FUNDOS) do
+		for _, id in ipairs(t.ids) do table.insert(urls, miniatura(id, 420)) end
+	end
+	preCarregar(urls)
+end)
+
+mostrarPagina("menu")
+refresh()
